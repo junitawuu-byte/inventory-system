@@ -1,52 +1,69 @@
 """
-庫存管理系統 - 使用 Streamlit
-資料來源：inventory.xlsx（請放在與 app.py 同一資料夾）
+庫存管理系統 - 使用 Streamlit（雲端即時版）
+資料來源：公開 Google 試算表（網址見 SPREADSHEET_URL）
 """
 
 import streamlit as st
 import pandas as pd
-from pathlib import Path
+from streamlit_gsheets import GSheetsConnection
 
 # 頁面設定
 st.set_page_config(
-    page_title="庫存管理系統",
+    page_title="庫存管理系統 (雲端即時版)",
     page_icon="📦",
     layout="centered",
     initial_sidebar_state="expanded",
 )
 
-# 資料檔路徑（與 app.py 同目錄）
-DATA_FILE = Path(__file__).parent / "inventory.xlsx"
+# 公開試算表連結（需設為「知道連結的使用者」可檢視）
+SPREADSHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1LXz9pXppiDleyQhjiVBg6RUmFfqarM-R2LW9HUIWgtM/edit?usp=sharing"
+)
 
-# 只顯示 Excel A～D 欄（工作表上由左而右前四欄）
+# 只顯示試算表 A～D 欄（由左而右前四欄）
 DISPLAY_COL_COUNT = 4
+# 每幾秒重新抓取一次最新資料（連線快取）
+CACHE_TTL_SECONDS = 60
+
+# 查詢用的欄位名稱（需存在於上述四欄之一；表頭請與試算表一致）
+PART_NUMBER_COLUMN = "零件編號"
 
 
-@st.cache_data(ttl=60)
 def load_inventory():
-    """讀取 inventory.xlsx，若不存在則回傳空 DataFrame。"""
-    if not DATA_FILE.exists():
-        return None
+    """從 Google 試算表讀取資料；失敗時回傳 None。"""
     try:
-        df = pd.read_excel(DATA_FILE, engine="openpyxl")
-        df.columns = df.columns.str.strip()  # 去除欄位名稱前後空白
-        return df
+        conn = st.connection("gsheets", type=GSheetsConnection)
+        df = conn.read(spreadsheet=SPREADSHEET_URL, ttl=CACHE_TTL_SECONDS)
     except Exception as e:
-        st.error(f"讀取 Excel 時發生錯誤：{e}")
+        st.error(f"讀取 Google 試算表時發生錯誤：{e}")
         return None
+
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+    df.columns = df.columns.astype(str).str.strip()
+    if df.shape[1] == 0:
+        return df
+
+    n = min(DISPLAY_COL_COUNT, df.shape[1])
+    df = df.iloc[:, :n]
+    return df
 
 
 def main():
-    st.title("📦 庫存管理系統")
+    st.title("📦 庫存管理系統 (雲端即時版)")
     st.markdown("---")
 
     df = load_inventory()
 
     if df is None:
-        st.warning(
-            f"找不到 **inventory.xlsx**，請將檔案放在此目錄：\n\n`{DATA_FILE.parent}`"
+        st.warning("無法載入庫存資料。")
+        st.info(
+            "請確認試算表已設為**知道連結的使用者可檢視**，且網路正常。"
+            "若改為私人試算表，請改用 `.streamlit/secrets.toml` 的服務帳戶設定。"
         )
-        st.info("請確認檔名為 `inventory.xlsx`（小寫），且與 app.py 在同一資料夾。")
         return
 
     if df.empty:
@@ -57,42 +74,24 @@ def main():
         st.info("工作表沒有任何欄位。")
         return
 
-    # 僅保留 A～D 欄（欄數不足四則顯示現有欄位）
-    n = min(DISPLAY_COL_COUNT, df.shape[1])
-    df = df.iloc[:, :n]
+    search_query = st.text_input("🔍 輸入零件編號查詢：", placeholder="留空則顯示全部")
 
-    # 側邊欄：查詢條件
-    st.sidebar.header("🔍 查詢條件")
+    if PART_NUMBER_COLUMN in df.columns:
+        search_col = PART_NUMBER_COLUMN
+    else:
+        search_col = df.columns[0]
+        st.caption(
+            f"試算表前四欄中找不到「{PART_NUMBER_COLUMN}」欄位，改以「{search_col}」查詢。"
+        )
 
-    # 取得所有欄位名稱供篩選
-    columns = df.columns.tolist()
-    text_columns = [
-        c for c in columns
-        if df[c].dtype == "object" or pd.api.types.is_string_dtype(df[c])
-    ]
-    if not text_columns:
-        text_columns = columns[:1]  # 至少用第一欄
-
-    search_col = st.sidebar.selectbox(
-        "依欄位搜尋",
-        options=columns,
-        index=0,
-    )
-    search_term = st.sidebar.text_input(
-        "關鍵字（留空則顯示全部）",
-        placeholder="輸入關鍵字...",
-    )
-
-    # 篩選邏輯
-    if search_term and search_term.strip():
+    if search_query and search_query.strip():
         mask = df[search_col].astype(str).str.contains(
-            search_term.strip(), case=False, na=False
+            search_query.strip(), case=False, na=False
         )
         display_df = df[mask]
     else:
         display_df = df.copy()
 
-    # 主畫面：庫存清單
     st.subheader("庫存清單")
 
     if display_df.empty:
@@ -106,7 +105,10 @@ def main():
         )
 
     st.markdown("---")
-    st.caption("資料來源：inventory.xlsx｜重新整理頁面以更新資料")
+    st.caption(
+        "資料來源：Google 試算表（公開連結）｜"
+        f"約每 {CACHE_TTL_SECONDS} 秒更新快取，或重新整理頁面"
+    )
 
 
 if __name__ == "__main__":
